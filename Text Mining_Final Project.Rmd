@@ -1,0 +1,1522 @@
+---
+title: "Irish authors of the 19th and 20th centuries: a comparative analysis"
+author: "Mencía Gómez and Alba Vega"
+date: "2025-04-25"
+output:
+  html_document:
+    theme: cerulean
+    highlight: tango
+    toc: yes
+    df_print: paged
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+# RELEVANCE OF THIS PROYECT
+
+This Text-Mining project seeks to explore the novels of **significant Irish authors of the 19th and 20th centuries**, including female voices such as Elizabeth Bowen and Edna O'Brien.
+The proposal consists of analyzing topics, language, sentiments and perspectives present in works by Wilde, Joyce, Stoker, Bowen, and O'Brien in Ireland in recent centuries.
+
+Here are the books we are using:
+
+-   Oscar Wilde: The Picture of Dorian Gray (1890)
+-   Bram Stoker: Dracula (1897)
+-   James Joyce: Ullyses (1920)
+-   Elisabeth Bowen: The Death of the Heart (1938)
+-   Edna O'Brien: The Country Girls (1960)
+
+This research has an **exploratory approach** with the main goal of **identifying whether the authors share common topics, approaches, or sensibilities due to having grown up in the same land and era.** We expect that by **sharing the historical context**, we will see certain **characteristic patterns**, although we also expect to see **differences**, for example between men and women.
+We are also interested in studying how **Ireland is represented in their works**, whether they explicitly mention it, and what emotions they evoke when doing so.
+
+Therefore, we will perform the following analyses:
+
+**PART I: LANGUAGE AND STYLE ANALYSES**
+
+In this part we'll explore how Irish authors use language: their vocabulary, lexical diversity, and thematic focus.
+
+1.  **TF, correlation, and TF-IDF**: We want to identify characteristic terms for each author or work, see if there are differences or similarities between authors regarding their terms (also calculating correlations) and, finally, we want to see if any novel or term stands out from the rest due to its vocabulary or approach.
+
+-   *What words define each author? Which authors are the most correlated? Is there a term or novel that deviates from the "canon" or common style?*
+
+2.  **Sparsity**: We want to see if there is a great variety of vocabulary in this collection of books or not, and if some authors stand out because of its diversity.
+
+-   *Who is the author who uses the greatest variety of vocabulary? And the one who uses the least?*
+
+3.  **Topic Modelling**: Since we are studying Irish authors writing in similar periods (late 19th century and early 20th century), we want to see if there are common topics in the 5 novels.
+
+-   *Do Irish authors share certain topics because they belonged to the same cultural context?*
+
+**PART II: SENTIMENT ANALYSIS**
+
+This section explores the emotional tone of the texts, identifying positive or negative expressions and how specific topics are emotionally framed.
+
+4.  **Sentiment Analysis**: Using terms and n-grams, we will explore the emotional tone of the novels and whether there are marked emotional tendencies among the authors and throughout the novels.
+
+-   *Do negative or positive feelings predominate? Does the female perspective introduce a different emotional tone? Do they all follow the same sentimental structure in their books?*
+
+5.  **Aspect-based sentiment analysis (conditional analysis) and correlations**: We will analyze how concepts like "Ireland" and "woman" are emotionally charged in the works.
+
+-   *Do they speak with affection or detachment from their homeland, Ireland? And what emotions are associated with the feminine? Do we perceive significant differences between male and female authors in these aspects?*
+
+We load the novels:
+
+```{r}
+library(readr)
+library(pdftools)
+wilde <- read_lines("wilde.txt")
+stoker <- read_lines("stoker.txt")
+joyce <- read_lines("joyce.txt")
+bowen <- pdf_text("bowen.pdf")
+obrien <- read_lines("obrien.txt")
+```
+
+### Data preparation
+
+Since we have the novels in .txt format (and one in .pdf), we can begin processing them by splitting the text into chapters and preparing them for analysis.
+
+First, we prepare the book of Oscar Wilde:
+
+```{r}
+library(tidyverse)
+
+wilde_df <- tibble(
+  # Process the text to separate chapters, save that in 'wilde_chapters'
+  text = unlist(strsplit(paste(wilde, collapse = " "), split = "CHAPTER"))
+)
+
+wilde_df <- wilde_df[-(1), ] #eliminate the first rows since it's the "gutemberg licence" and it's not necessary for out analysis
+
+wilde_df <- wilde_df |>
+  mutate(chapter = 1:n()) |> #we add another column with the chapter number of the book
+  mutate(text = as.character(text)) #we convert text to character
+
+```
+
+We do the same for the other books, with the same code:
+
+For Stoker:
+
+```{r}
+stoker_df <- tibble(
+  text = unlist(strsplit(paste(stoker, collapse = " "), split = "CHAPTER"))
+)
+
+stoker_df <- stoker_df[-(1), ] 
+
+stoker_df <- stoker_df |>
+  mutate(chapter = 1:n()) |>
+  mutate(text = as.character(text))
+```
+
+For Joyce:
+
+```{r}
+joyce_df <- tibble(
+  # In this case, we use a regular expression in "split" that indicates that each chapter beginning is given with brackets in which there is a 1 or 2 digit number, e.g [ 1 ], [ 2 ], ...
+  
+  text = unlist(strsplit(paste(joyce, collapse = " "), split = "\\[\\s*[0-9]{1,2}\\s*\\]"))) |> 
+  mutate(text = str_trim(text), chapter = row_number())
+
+
+joyce_df <- joyce_df[-(1:19), ] #we eliminate the first 19 rows since it was the index and we don't need it
+
+joyce_df <- joyce_df |>
+  mutate(chapter = 1:n()) |>
+  mutate(text = as.character(text))
+
+```
+
+For Edna O'Brien:
+
+```{r}
+obrien_df <- tibble(
+  #in the regular expression we split the text by patterns that match "introduction", "epilogue", or chapter numbers (e.g. 1, 2, ..., 12)
+  text = unlist(strsplit(paste(obrien, collapse = " "), split = "(?i)\\s*(introduction|epilogue|[0-9]{1,2})\\s+", perl = TRUE))
+)
+
+obrien_df <- obrien_df[-c(1:5, 64:134), ] 
+
+obrien_df <- obrien_df |>
+  mutate(chapter = 1:n()) |>
+  mutate(text = as.character(text))
+
+```
+
+For Elisabeth Bowen:
+
+In this case we had to select the chapters manually since R didn't detect the title for each chapter
+
+```{r}
+# Pages where each chapter begins:
+chapter_pages_bowen <- c(5, 115, 215)
+
+# For each chapter, we will split the text by pages
+bowen_chapters <- list()
+
+for (i in 1:(length(chapter_pages_bowen) - 1)) {
+  start_page <- chapter_pages_bowen[i]
+  end_page <- chapter_pages_bowen[i + 1] - 1
+  
+  chapter_text <- paste(bowen[start_page:end_page], collapse = " ")
+  
+  bowen_chapters[[i]] <- chapter_text
+}
+
+# Last chapter:
+last_chapter_text <- paste(bowen[chapter_pages_bowen[length(chapter_pages_bowen)]:length(bowen)], collapse = " ")
+bowen_chapters[[length(chapter_pages_bowen)]] <- last_chapter_text
+
+# Tibble
+bowen_df <- tibble(
+  chapter = 1:length(bowen_chapters),
+  text = bowen_chapters
+)
+bowen_df <- bowen_df |> mutate(text = as.character(text))
+
+```
+
+Now we have our books prepared to be analyzed:
+
+# PART I: LANGUAGE AND STYLE ANALYSES
+
+## 1. Term Frequency comparison
+
+First we want to see the most representative terms of each book, that is, the **Term Frequency**.
+Which are the characteristic terms and n-grams of each author?
+Can we see some similarities?
+
+To do this, we'll create a function that does everything in one step so we can apply it to all the books: tokenize, calculate the relative frequency, and create the graph.
+Even so, we'll have to customize some "stop words" for each book.
+
+```{r}
+library(tidytext)
+
+#Customize stopwords
+
+data("stop_words")
+custom_words <- tibble(
+  word = c("dorian", "gray", "gutenberg", "project", "https", "www.gutenberg.org", "a.m", "files", "h.htm")
+)
+number_words <- tibble(word = as.character(1:300))
+custom_words <- bind_rows(stop_words, custom_words, number_words)
+
+# Function to calculate the relative frequency and graph the 10 most representative words
+get_term_frequencies <- function(text_df, custom_words) {
+  
+  # Tokenize words
+  words_df <- text_df |>
+    unnest_tokens(word, text) |>
+    anti_join(custom_words, by = "word") |>
+    count(word, sort = TRUE)
+  
+  # Calculate the total of words
+  total_words <- sum(words_df$n)
+  
+  # Calculate the relative term frequency
+  words_df <- words_df |>
+    mutate(relative_frequency = n / total_words)
+  
+  return(words_df)
+}
+
+```
+
+We apply this function to the 5 authors and we join the results:
+
+```{r}
+
+# Wilde
+wilde_tf <- get_term_frequencies(wilde_df, custom_words) |> 
+  mutate(author = "Wilde")
+
+# Stoker
+stoker_tf <- get_term_frequencies(stoker_df, custom_words) |> 
+  mutate(author = "Stoker")
+
+# Joyce
+joyce_tf <- get_term_frequencies(joyce_df, custom_words) |> 
+  mutate(author = "Joyce")
+
+# Bowen
+bowen_tf <- get_term_frequencies(bowen_df, custom_words) |> 
+  mutate(author = "Bowen")
+
+# O'Brien
+obrien_tf <- get_term_frequencies(obrien_df, custom_words) |> 
+  mutate(author = "O'Brien")
+
+# Bind the results:
+all_authors_tf <- bind_rows(wilde_tf, joyce_tf, stoker_tf, bowen_tf, obrien_tf)
+
+```
+
+We now want to create a single visualization with a bar plot for each author, showing the most representative terms from each novel.
+
+```{r}
+#Create dataframe grouping authors and words
+top_words_by_author <- all_authors_tf |>
+  group_by(author) |>
+  slice_max(relative_frequency, n = 10) |> #we select 10 words for each author
+  ungroup()
+
+# We do the plot
+ggplot(top_words_by_author, aes(relative_frequency, fct_reorder(word, relative_frequency), fill = author)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~author, scales = "free", ncol = 2) +  #2 graphs by row to see more clearly
+  coord_flip() +
+  labs(x = "Term Frequency", y = NULL, title = "Top 10 Most Representative Words by Author") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 3))
+
+```
+
+We see that **a very representative term found in all five novels is "time"**; all five authors use it frequently.
+Next, the word "night" is representative of all the novels except Bowen's.
+"Eyes" is present in two authors (Joyce and Wild), "hand" is also present (Joyce and Stoker), and "day" is present (Joyce and Stoker again).
+
+In any case, it's worth noting that the most representative word in all the books are the names or references to one of the characters, especially the main ones.
+
+## 2. Correlations
+
+Now that we've seen that many terms are shared among several authors, we want to see which ones are more correlated, that is, which authors tend to use similar words with similar frequencies, potentially reflecting shared themes, styles, or linguistic choices.
+
+```{r}
+library(tidyr)
+
+#This generates a matrix of terms (rows = words, columns = authors), where each cell contains the relative frequency of that word in an author.
+author_word_matrix <- all_authors_tf |>
+  select(author, word, relative_frequency) |>
+  pivot_wider(names_from = author, values_from = relative_frequency, values_fill = 0)
+author_word_matrix
+
+# We just keep the column with the authors to do the correlation
+cor_matrix <- cor(author_word_matrix[-1])
+cor_matrix
+```
+
+We know that the closer a number is to 1, the more correlated the authors are.
+We see that the **most correlated authors are Joyce with O'Brien (0.58) and Joyce with Stoker (0.54)**; while those with the **least correlated are Bowen with Stoker (0.4) and Bowen with Joyce (0.41)**.
+
+This already gives us a clue that Elisabeth Bowen is the author who might differ the most in style and topics from the rest of the authors, while Joyce tends to coincide most with the rest.
+
+We can visualize it in a plot.
+And as we see, Bowen's column is the clearest, which corroborates our idea that it is the one that differs the most from the rest:
+
+```{r}
+library(corrplot)
+
+corrplot(cor_matrix, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45)
+```
+
+## 3. TF-IDF comparison
+
+Now that we have an idea of the terms authors use and which are most and least correlated, we want to see the **TF-IDF** of the Irish book collection.
+Given the previous analysis, we might think that the term with the highest TF-IDF will be Bowen's book.
+Let's take a look:
+
+First we bind the 5 databases:
+
+```{r}
+wilde_df <- wilde_df |> mutate(author = "Wilde")
+joyce_df <- joyce_df |> mutate(author = "Joyce")
+stoker_df <- stoker_df |> mutate(author = "Stoker")
+bowen_df <- bowen_df |> mutate(author = "Bowen")
+obrien_df <- obrien_df |> mutate(author = "O'Brien")
+
+all_books_df <- bind_rows(wilde_df, joyce_df, stoker_df, bowen_df, obrien_df) |>
+  group_by(author) |>
+  summarise(text = paste(text, collapse = " ")) |>
+  ungroup()
+
+```
+
+Now we tokenize (it's not necessary to filter stopwords since the method does it intrinsically) and we apply the TF-IDF function (already exists):
+
+```{r}
+# Tokenize
+book_words <- all_books_df |>
+  unnest_tokens(word, text) |>
+  count(author, word, sort = TRUE)
+
+#TF-IDF
+book_tf_idf <- book_words |>
+  bind_tf_idf(word, author, n) |>
+  arrange(desc(tf_idf)) |>
+  slice_head(n = 10) #we select the top 10 most distinctive words
+book_tf_idf
+
+#Plot
+ggplot(book_tf_idf, aes(tf_idf, fct_reorder(word, tf_idf), fill = author)) +
+  geom_col(show.legend = TRUE) +
+  labs(
+    x = "TF-IDF",
+    y = NULL,
+    title = "Top 10 Most Distinctive Words Across All Novels",
+    subtitle = "Each word is colored by the novel it appears in"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 10))
+
+```
+
+Wilde and Bowen are the authors with the most high TF-IDF terms, while Joyce, O'Brien, and Stoker have the fewest high TF-IDF terms.
+In any case, **all of the high TF-IDF terms correspond to proper and character names from the novels, which makes sense and doesn't add much to our analysis**, since proper names tend to be unique to each story and don't necessarily reflect the author's linguistic or thematic style.
+This doesn't help us understand deeper language patterns, recurring topics, or stylistic similarities between authors (And looking at the book_tf_idf table, we see that even within the top 50 terms with the highest TF-IDF, the vast majority are character names)
+
+## 4. Sparsity
+
+At this point, considering this collections of Irish authors, we want to see the sparsity; that is: **does the collection have a richer and diverse or similar vocabulary?** In other words: the Irish authors rely on a broad, varied lexicon to express their ideas, or do they tend to use a more limited and repetitive vocabulary throughout their works?
+
+We expect a low sparsity (less varied lexicon and vocabulary) since they belonged to a similar context.
+
+```{r}
+# Tokenization
+book_words <- all_books_df |>
+  unnest_tokens(word, text) |>
+  anti_join(stop_words, by = "word") |>
+  count(author, word, sort = TRUE)
+
+# Create a Document-term matrix (DTM)
+book_dtm <- book_words |>
+  cast_dtm(author, word, n)
+
+
+book_dtm
+```
+
+How we expected, **the sparsity is medium-low (66% of the matrix are 0s), meaning that Irish authors of the 19th and 20th centuries use similar vocabulary in their novels** (a sparsity of 99% would indicate great differences in vocabulary)
+
+Now we can see which author use a more broader vocabulary:
+
+```{r}
+# DTM to matrix
+dtm_matrix <- as.matrix(book_dtm)
+
+# Sparsity by author (row)
+author_sparsity <- apply(dtm_matrix, 1, function(row) {
+  sum(row == 0) / length(row)
+})
+
+author_sparsity
+
+```
+
+In this case, the interpretation is different: we are measuring, for each author individually, what percentage of their total vocabulary they do NOT use (which is 0).
+For example, for Joyce, 22% is zero; that means he uses 77.9% of the total vocabulary.
+Therefore, **Joyce uses a much larger portion of the total vocabulary (77.9%); it's more diverse**.
+On the other hand, **Wilde only uses 18.9% of the words, meaning his vocabulary is more limited or focused compared to the rest**.
+Stoker, O'Brien and Bowen use about 20-30% of the vocabulary.
+
+However, this results could be bias because perhaps Joyce's rich vocabulary is due to his longer book so let's see if it's true:
+
+```{r}
+library (dplyr)
+word_counts_by_author <- all_books_df |>
+  unnest_tokens(word, text) |>    # tokenize
+  group_by(author) |>              # group by author
+  summarise(total_words = n()) |>  # count words
+  arrange(desc(total_words))        # sort
+
+print(word_counts_by_author)
+
+```
+
+Indeed, Joyce has more lexical richness because his book is longer, while Wilde has less variety because his book is shorter.
+
+For a more accurate comparison, **we calculate lexical diversity** by dividing the number of unique words by the total number of words.
+This will show which author uses a more varied vocabulary relative to the length of their work.
+
+```{r}
+lexical_diversity <- all_books_df |>
+  unnest_tokens(word, text) |> 
+  anti_join(stop_words, by = "word") |> 
+  group_by(author) |> 
+  summarise(
+    total_words = n(),
+    unique_words = n_distinct(word),
+    lexical_diversity = unique_words / total_words
+  ) |>
+  arrange(desc(lexical_diversity))
+
+print(lexical_diversity)
+
+```
+
+They all have more or less the same lexical diversity, although Joyce and Wilde have much more than Stoke or O'Brien.
+
+## 5. Topic modelling
+
+Now we want to see if there are common topics in the 5 novels, since, as they are Irish authors writing in similar periods (late 19th century and early 20th century), we hope to find at least one common topic, maybe about Ireland:
+
+```{r}
+library(topicmodels)
+
+# LDA  model (2 topics)
+lda_books <- LDA(book_dtm, k = 2, control = list(seed = 1234))
+
+#We want to see beta: probability for the word of belonging to each topic
+topics_books <- tidy(lda_books, matrix = "beta")
+
+# Top 5 more representative terms of each topic
+top_terms_books <- topics_books |>
+  group_by(topic) |>
+  slice_max(beta, n = 7) |>
+  ungroup() |>
+  arrange(topic, beta)
+
+#Plot:
+top_terms_books |>
+  mutate(term = reorder_within(term, beta, topic)) |>
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered() +
+  labs(title = "Topics",
+       x = "Probability (beta)",
+       y = "Words")
+```
+
+The first topic is difficult to define, but in the second, we see something clearer.
+In this second topic, this set of words suggests an **introspective, sensorial, and existential topic, revolving around the human experience**.
+On the one hand, the **words "time, night, life, and day" evoke the passage of time**, something very present in Irish authors.
+On the other hand, **"eyes" and "hand" are physical elements that can point to the sensorial**: sight, touch, and the perception of the world.
+The word "bloom" could also be classified as another word that evokes the passage of time, although it is more likely to refer to the character of *Ulysses*.
+
+**As a summary we can say that Irish authors of the 19th and 20th centuries explore topics of time, perception, and the human condition**
+
+# PART II: SENTIMENT ANALYSIS
+
+In this section, we will perform sentiment analysis using the NRC, Bing, and AFINN approaches, leveraging the strengths of each and addressing the limitations of the others.
+
+## 6. Sentiment analysis
+
+First, we will load some libraries that we will need in the analysis:
+
+```{r}
+# Load libraries
+library(textdata)
+library(stringr)
+library(wordcloud)
+library(syuzhet)
+```
+
+We clean the database already created in previous steps (where each observation is an author/novel):
+
+```{r}
+all_books <- all_books_df |> 
+  unnest_tokens(word, text) |> 
+  filter(!word %in% stop_words$word) |> 
+  group_by(author) |> 
+  mutate(position = row_number()) |>
+  ungroup()
+
+```
+
+### NRC Analysis
+
+We will start by performing a **NRC analysis**.
+We will exclude the categories of "Positive" and "Negative", since they will be studied later by using Bing.
+What we want to do now is investigate which sentiments are the most frequent in the different books:
+
+```{r}
+nrc <- get_sentiments("nrc") # Load the NRC dictionary and create a tibble with it
+df_nrc <- all_books |> 
+  inner_join(nrc, by = "word") # Add the column sentiment to each of the words
+```
+
+```{r}
+# Let´s study the emotions by author: 
+emotions_by_author <- df_nrc |> 
+  filter(!sentiment %in% c("positive", "negative")) |> # Filter out "positive" and "negative"
+  count(author, sentiment) 
+```
+
+```{r}
+# Now, we visualize it
+ggplot(emotions_by_author, aes(x = author, y = n, fill = sentiment)) +
+  geom_col(position = "stack") +
+  labs(title = "Emotions by author (NRC)", x = "Author", y = "Word frequency") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+This first graph works without taking into consideration the length of each of the books.
+We can see that the longest book is *Ulysses*, by Joyce.
+Nevertheless, let's take a look at a graph that does take into account how long each book is and works with proportions of feelings:
+
+```{r}
+
+emotions_by_author_pct <- df_nrc |> 
+  filter(!sentiment %in% c("positive", "negative")) |>  # Keep only specific emotions
+  count(author, sentiment) |>                            # Count the number of occurrences of each sentiment per author
+  group_by(author) |>                                    # Group by author
+  mutate(percent = n / sum(n) * 100) |>                  # Calculate the percentage each emotion represents for that author
+  ungroup()                                           
+
+ggplot(emotions_by_author_pct, aes(x = author, y = percent, fill = sentiment)) +
+  geom_col(position = "stack") +                         # Create a stacked bar chart
+  labs(title = "Emotions by author (NRC, proportional)", 
+       x = "Author", y = "Percentage") +
+  theme_minimal() +                                    
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x-axis labels for better readability
+
+```
+
+Let´s take a look at another graph that may be clearer (so that the bars are not stacked):
+
+```{r}
+# Deepening analysis by author 
+df_emotions <- df_nrc |> 
+  filter(!sentiment %in% c("positive", "negative"))  # Keep only specific emotions
+
+df_emotions |> 
+  count(author, sentiment) |>                        # Count how many times each sentiment appears per author
+  group_by(author) |>                                # Group by author to calculate relative percentages
+  mutate(pct = n / sum(n) * 100) |>                  # Calculate the percentage of each emotion for that author
+  ggplot(aes(x = sentiment, y = pct, fill = author)) + 
+  geom_col(position = "dodge") +                     # Use side-by-side bars for each author 
+  labs(title = "Percentage of emotions by author",  
+       x = "Emotion", y = "% of the total of emotions") +
+  theme_minimal() +                                
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+
+```
+
+As we can see, **the most treated emotions for all of the authors are trust, anticipation, fear, joy and sadness.** They all seem to treat all of them in similar proportions.
+We may see that in the case of fear, Stoker has a higher percentage, which makes total sense taking into account that *Dracula* is a horror novel, while the rest of the books taken into account in the analysis are not.
+Also, we can see that O'Brien treats trust slightly less than the other authors.
+Nevertheless, their percentages are, in general, pretty similar.
+Now, we will deepen in the analysis of these emotions:
+
+```{r}
+emotions_deep <- c("anticipation", "fear", "joy", "sadness", "trust")
+
+emotions_nrc <- df_nrc |> 
+  filter(sentiment %in% emotions_deep) |> 
+  count(author, sentiment)
+```
+
+We plot the distribution of the most important emotions by author using NRC.
+We are going to work with percentages:
+
+```{r}
+# Taking now into account how many words does each of the books have:
+
+emotions_nrc_pct <- emotions_nrc |> 
+  group_by(author) |> 
+  mutate(prop = n / sum(n) * 100)
+
+ggplot(emotions_nrc_pct, aes(x = sentiment, y = prop, fill = sentiment)) +
+  geom_col(show.legend = TRUE) +
+  facet_wrap(~ author) +
+  labs(title = "Emotions proportion distribution by author (nrc)",
+       x = "Emotion", y = "Percentage") +
+  theme_minimal()+
+  theme(axis.text.x = element_blank())
+```
+
+-   Anticipation: Bowen and Stoker are the ones that seem to make the most reference to this sentiment.
+-   Fear: again, it is not a surprise that the book in which the sentiment of fear is more prominent is in *Dracula*, by Bram Stoker.
+-   Joy: None of the authors work with joy as much as with the other emotions, but the ones that do it the most are Bowen and Wilde.
+-   Sadness: surprisingly, Wilde is also the author that works the most with the emotion of sadness, in a similar way to O'Brien.
+-   Trust: again, both Wilde and Bowen are the authors that use the most of this emotion in their work.
+
+Now, let's take a look at the **frequency of words related to each of these emotions**, according to a NRC analysis, in each of the books:
+
+```{r}
+# First, taking into account all of the books in general, without considering each of the authors separately
+top_emotion_words <- df_nrc |> 
+  filter(sentiment %in% emotions_deep) |>                 # Filter to include only selected emotions 
+  count(sentiment, word, sort = TRUE) |>                  # Count frequency of each word per emotion
+  group_by(sentiment) |>                                  # Group by emotion to get top words within each group
+  slice_max(n, n = 10, with_ties = FALSE) |>              # Select top 10 most frequent words per emotion (no ties)
+  ungroup()                                          
+
+top_emotion_words |> 
+  mutate(word = reorder_within(word, n, sentiment)) |>    # Reorder words within each facet based on frequency
+  ggplot(aes(x = word, y = n, fill = sentiment)) +        
+  geom_col(show.legend = FALSE) +                        
+  facet_wrap(~ sentiment, scales = "free") +              # Create a separate plot panel for each emotion
+  scale_x_reordered() +                                   
+  coord_flip() +                                          # Flip coordinates to make horizontal bars
+  labs(title = "Top 10 words by emotion (nrc)",           
+       x = "Word", y = "Frequency") +
+  theme_minimal()                                         
+
+```
+
+Here we find a problem that may suppose a bias to our sentiment analysis: R considers some proper names from the books words that are to be considered in different sentiments.
+For example, Bloom, Gray, Harry...
+"Miss" and "Sir" also suppose problems.
+We have, then, to **exclude these words from the sentiment analysis and repeat some of what we've done this far**:
+
+```{r}
+exclude <- c("harry", "miss", "bloom", "sir", "gray", "john")
+
+all_books_filtered <- all_books |> 
+  filter(!word %in% exclude)
+
+head(all_books_filtered)
+```
+
+Now we can perform again the analysis of the most used words in order to express each of the emotions:
+
+```{r}
+df_nrc <- all_books_filtered |> 
+  inner_join(nrc, by = "word") 
+
+top_emotion_words <- df_nrc |> 
+  filter(sentiment %in% emotions_deep) |> 
+  count(sentiment, word, sort = TRUE) |> 
+  group_by(sentiment) |> 
+  slice_max(n, n = 10, with_ties = FALSE) |> 
+  ungroup()
+
+top_emotion_words |> 
+  mutate(word = reorder_within(word, n, sentiment)) |> 
+  ggplot(aes(x = word, y = n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ sentiment, scales = "free") +
+  scale_x_reordered() +
+  coord_flip() +
+  labs(title = "Top 10 words by emotion (nrc)",
+       x = "Word", y = "Frequency") +
+  theme_minimal()
+```
+
+As we can observe in the graph, the word that seems to be the most frequent among the texts is "*time"*, which expresses a clear emotion of anticipation.
+This may indicate the worry of all the considered Irish authors by the time passing by and its different consequences.
+
+Probably for Dorian Grey (Wilde), the worry is about aging and getting older; for John Harker (main character in *Dracula*, by Stocker) it may indicate a race against both time and the vampire.
+We may also observe that **God is a recurrent theme for all of the authors, specially refering to fear**.
+We may take into account that, traditionally, the Irish people have been deeply catholic, so this may be reflected in the different novels as a fear for God, but also love, anticipation, joy...
+And, speaking of love, the word "love" seems to be the most used one to express the emotion of joy.
+We can see that **"mother" and "father" are the most used terms when expressing sadness and trust**, respectively.
+
+Let's take a look at the distribution of the most used words per emotion and by author:
+
+```{r}
+# Now, separating the graph by author:
+
+top_emotion_words_by_author <- df_nrc |> 
+  filter(sentiment %in% emotions_deep) |>               # Keep only emotions of interest
+  count(author, sentiment, word, sort = TRUE) |>        # Count word frequency by author and sentiment
+  group_by(author, sentiment) |>                        # Group by both author and sentiment
+  slice_max(n, n = 5, with_ties = FALSE) |>             # Select top 5 most frequent words per author/emotion combo
+  ungroup()                                             
+
+autores <- unique(top_emotion_words_by_author$author)   # Get list of unique authors
+
+walk(autores, function(a) {                             # Loop over each author
+  g <- top_emotion_words_by_author |> 
+    filter(author == a) |>                              # Filter data for current author
+    mutate(word = reorder_within(word, n, sentiment)) |> # Reorder words by frequency within each sentiment
+    ggplot(aes(x = word, y = n, fill = sentiment)) +    
+    geom_col(show.legend = FALSE) +                     
+    facet_wrap(~ sentiment, scales = "free") +          # Create a facet for each sentiment with independent scales
+    scale_x_reordered() +                              
+    coord_flip() +                                      
+    labs(title = paste("Top 5 words by emotion -", a), # Dynamic title with author name
+         x = "Word", y = "Frequency") +             
+    theme_minimal()                                     
+  
+  print(g)                                              # Print the plot for the current author
+})
+
+```
+
+If we look at the authors, while we see that they all position "father" with a positive emotion (trust), "mother" is infected with both positive (joy, trust) and negative (sadness).
+We could even say that **most male authors do not attribute positive values to the mother**; just as Wilde usually associates "mother" with sadness, Stocker doesn't even mention it related to a sentiment; although Joyce does associate it with both sadness and joy.
+**Women (Bowen and O'Brien) have the mother figure much more present**, and in the three main emotions: joy, trust, and sadness.
+This is also because women's novels are crossed by a much stronger gender issue, which it's understandable in the societies of the 19th and 20th centuries where the differences between men and women were very marked.
+
+In the word clouds we can see the same thing more clearly:
+
+```{r}
+words_nrc <- all_books_filtered |> 
+  inner_join(nrc, by = "word") |>                         # Join your book data with NRC sentiment lexicon by word
+  filter(!sentiment %in% c("positive", "negative")) |>    
+  count(author, sentiment, word, sort = TRUE)             # Count how often each word appears per author and emotion
+
+# Loop through each author and sentiment to create wordclouds
+for (a in unique(words_nrc$author)) {
+  for (s in unique(words_nrc$sentiment)) {
+    df <- words_nrc |> filter(author == a, sentiment == s)  # Filter data for current author and emotion
+
+    if (nrow(df) > 0) {                                      # Only create wordcloud if there's data to show
+      set.seed(123)                                          # Set seed for reproducibility
+      wordcloud(words = df$word,                             # Words to be displayed
+                freq = df$n,                                 # Frequencies of words
+                max.words = 80,                              # Max number of words in the cloud
+                min.freq = 3,                                # Minimum frequency to be included
+                random.order = FALSE,                        # Words with higher freq appear more central
+                colors = brewer.pal(8, "Dark2"),             
+                scale = c(3, 0.5))                           
+      
+      title(main = paste("Wordcloud -", s, "(", a, ")"))    
+    }
+  }
+}
+
+```
+
+#### Bigrams and Trigrams (NRC)
+
+Before going on to further emotion and sentiment analysis, let's take a look at the most frequent bigrams and trigrams according to NRC:
+
+```{r}
+# BIGRAMS
+bigrams <- all_books_df |>  # <-- usamos la base original
+  unnest_tokens(bigram, text, token = "ngrams", n = 2) |>
+  separate(bigram, into = c("word1", "word2"), sep = " ", remove = FALSE) |>
+  filter(
+    !is.na(word1), !is.na(word2),
+    !word1 %in% stop_words$word,
+    !word2 %in% stop_words$word
+  ) |>
+  mutate(bigram = paste(word1, word2, sep = " ")) |>
+  select(-word1, -word2)
+
+# TRIGRAMAS
+trigrams <- all_books_df |>
+  unnest_tokens(trigram, text, token = "ngrams", n = 3) |>
+  separate(trigram, into = c("word1", "word2", "word3"), sep = " ", remove = FALSE) |>
+  filter(
+    !is.na(word1), !is.na(word2), !is.na(word3),
+    !word1 %in% stop_words$word,
+    !word2 %in% stop_words$word,
+    !word3 %in% stop_words$word
+  ) |>
+  mutate(trigram = paste(word1, word2, word3, sep = " ")) |>
+  select(-word1, -word2, -word3)
+
+```
+
+First, we focus on **BIGRAMS**
+
+```{r}
+# Bigrams
+total_bigrams <- bigrams |> 
+  filter(!str_detect(bigram, "\\bmiss\\b")) |>  # Exclude word "miss"
+  count(author) |> 
+  rename(total = n)
+
+
+bigrams_nrc <- bigrams |>
+  separate(bigram, into = c("word1", "word2"), sep = " ") |>
+  pivot_longer(cols = c(word1, word2), names_to = "pos", values_to = "word") |>
+  inner_join(nrc, by = "word") |>
+  count(author, sentiment) |>
+  left_join(total_bigrams, by = "author") |>
+  mutate(pct = n / total * 100)
+
+
+ggplot(bigrams_nrc, aes(x = author, y = pct, fill = sentiment)) +
+  geom_col(position = "stack") +
+  labs(title = "Proporción de sentimientos por autor (NRC - bigramas)",
+       x = "Autor", y = "% de bigramas con sentimiento") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+bigrams_separated <- bigrams |>
+  separate(bigram, into = c("word1", "word2"), sep = " ")
+
+bigrams_nrc <- bigrams_separated |>
+  left_join(nrc, by = c("word1" = "word")) |>
+  rename(sentiment1 = sentiment) |>                          # Rename sentiment from word1
+  left_join(nrc, by = c("word2" = "word")) |>
+  rename(sentiment2 = sentiment) |>                          # Rename sentiment from word2
+  mutate(
+    sentiment = coalesce(sentiment1, sentiment2),             # Use the non-NA sentiment if available
+    bigram = paste(word1, word2)                              # Create a 'bigram' column by combining word1 and word2
+  ) |>
+  filter(
+    !word1 %in% c("miss", "master", "gray", "bloom", "lord"),         # Exclude bigrams with any of the unwanted words in word1
+    !word2 %in% c("miss", "master", "gray", "bloom", "lord"),         # or in word2
+    !is.na(sentiment)                                         # Keep only bigrams with at least one sentiment
+  )
+
+
+top_bigrams_nrc <- bigrams_nrc |>
+  filter(!sentiment %in% c("positive", "negative")) |> 
+  count(author, sentiment, bigram, sort = TRUE) |>
+  group_by(author, sentiment) |>
+  slice_max(n, n = 10, with_ties = FALSE) |>
+  ungroup()
+
+for (a in unique(top_bigrams_nrc$author)) {
+  plot <- top_bigrams_nrc |>
+    filter(author == a) |>
+    ggplot(aes(x = fct_reorder(bigram, n), y = n, fill = sentiment)) +
+    geom_col(show.legend = FALSE) +
+    facet_wrap(~ sentiment, scales = "free") +
+    coord_flip() +
+    labs(title = paste("Top 10 Bigrams with NRC Sentiment -", a),
+         x = "Bigram", y = "Frecuency") +
+    theme_minimal()+
+    theme(axis.text.y = element_text(size = 7))  
+  print(plot)
+}
+
+```
+
+Here we can see the **importance of religion even more emphatically**.
+On the one hand, the name "God" not only reappears in everyday expressions like "god bless" but also in other religious expressions like "pray god", and in other expressions with other words such as "blessed virgin", "mother church" or "church finally".
+On the other hand, where we saw in the previous analyses that "trust" is related to "father," here we realize that it refers to the priest (priest=father), which once again highlights the importance of the Catholic religion in Irish authors, both male and female.
+Evidently, *Dracula* is the novel with the greatest religious and spiritual weight, with expressions like "God God," "God Grant," "Spirits Dewing."
+
+The mention of "mother" also persists in bigrams such as "damn mother" or "blessed mother." Likewise, "money" appears for the first time in more negative than positive sentiments.
+
+Now we focus on **TRIGRAMS**
+
+```{r}
+# Trigrams
+total_trigrams <- trigrams |> 
+  filter(!str_detect(trigram, "\\bmiss\\b")) |>  # Exclude word "miss"
+  count(author) |> 
+  rename(total = n)
+
+
+trigrams_nrc <- trigrams |>
+  separate(trigram, into = c("word1", "word2", "word3"), sep = " ") |>   # Split trigram into 3 separate words
+  pivot_longer(cols = c(word1, word2, word3),                             # Reshape to long format to check each word
+               names_to = "pos", values_to = "word") |>
+  filter(!word %in% c("miss", "master", "gray", "bloom", "lord")) |>             # Exclude unwanted words
+  inner_join(nrc, by = "word") |>                                        # Join with NRC lexicon
+  count(author, sentiment) |>                                            # Count how many words per sentiment per author
+  left_join(total_trigrams, by = "author") |>                            # Add total trigram count per author
+  mutate(pct = n / total * 100)   
+
+
+ggplot(trigrams_nrc, aes(x = author, y = pct, fill = sentiment)) +
+  geom_col(position = "stack") +
+  labs(title = "Sentiment ratio per author (NRC - trigrams)",
+       x = "Author", y = "% of trigrams with feeling") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+trigrams_separated <- trigrams |> 
+  separate(trigram, into = c("word1", "word2", "word3"), sep = " ")  # Split each trigram into three  words
+
+trigrams_nrc <- trigrams_separated |>
+  left_join(nrc, by = c("word1" = "word")) |>                        # Join NRC sentiment to word
+  rename(sentiment1 = sentiment) |>                                  # Rename the sentiment column for word
+  left_join(nrc, by = c("word2" = "word")) |>                       
+  rename(sentiment2 = sentiment) |>                                  
+  left_join(nrc, by = c("word3" = "word")) |>                       
+  rename(sentiment3 = sentiment) |>                                 
+  mutate(
+    sentiment = coalesce(sentiment1, sentiment2, sentiment3),       # Choose the first non-NA sentiment value from the three words
+    trigram = paste(word1, word2, word3)                             # Reconstruct the trigram as a single string
+  ) |>
+  filter(!is.na(sentiment))                                          # Keep only trigrams where at least one word has a sentiment
+
+top_trigrams_nrc <- trigrams_nrc |>
+  filter(!sentiment %in% c("positive", "negative")) |>              # Exclude general positive/negative labels, keep only emotions
+  count(author, sentiment, trigram, sort = TRUE) |>                 # Count the frequency of each trigram per author and sentiment
+  group_by(author, sentiment) |>                                    # Group by author and sentiment
+  slice_max(n, n = 10, with_ties = FALSE) |>                        # Select the top 10 trigrams per sentiment for each author
+  ungroup()                                                         
+
+for (a in unique(top_trigrams_nrc$author)) {                        # Loop over each unique author
+  plot <- top_trigrams_nrc |>
+    filter(author == a) |>                                          # Filter data for the current author
+    ggplot(aes(x = fct_reorder(trigram, n), y = n, fill = sentiment)) +  # Create bar plot ordered by frequency
+    geom_col(show.legend = FALSE) +                                
+    facet_wrap(~ sentiment, scales = "free") +                      # Create one plot per sentiment
+    coord_flip() +                                                  
+    labs(title = paste("Top 10 trigrams by sentiment NRC -", a),
+         x = "Trigram", y = "Frequency") +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 7)) 
+  print(plot)                                                      
+}
+
+```
+
+After analyzing the trigrams, we see that they don't provide much more information than we already had, but rather consolidate it.
+**The most emotionally charged topics are God and religion, the figure of the mother, and money.**
+
+### BING Analysis
+
+Now let's continue by performing a polarization analysis.
+In other words, we will use BING to study the positive and negative emotions and sentiments that are to be found in the texts.
+We focus directly on proportions and not on absolute frequencies.
+
+```{r}
+# Bing (positive vs negative)
+
+bing <- get_sentiments("bing")  # Load the BING lexicon (categorizes words as either "positive" or "negative")
+
+df_bing <- all_books_filtered |> 
+  inner_join(bing, by = "word")  # Join your word data with the BING sentiment labels
+
+# With proportions
+
+bing_sentiments_pct <- df_bing |> 
+  count(author, sentiment) |>                      # Count how many positive/negative words each author has
+  group_by(author) |>                              # Group by author to calculate proportions
+  mutate(pct = n / sum(n) * 100) |>                # Convert counts to percentages of total sentiment words per author
+  ungroup()                                        
+
+ggplot(bing_sentiments_pct, aes(x = author, y = pct, fill = sentiment)) +
+  geom_col(position = "dodge") +                   # Use side-by-side bars to compare positive vs. negative per author
+  labs(title = "Positive and negative words by author (BING, proportion)", 
+       x = "Author", y = "Proportion of words") +
+  theme_minimal()                                 
+
+```
+
+In general, our **Irish authors from the 19th and 20th centuries work significantly more with negative emotions and sentiments than with positive ones.** The women, Bowen and O'Brien, are the ones that have bigger proportions of use and reference to negative emotions; Joyce, in the other hand, is the "most positive" one in his work, with Wilde following close behind.
+
+Let's take a look at the emotional balance of the books.
+
+*In general, are they negative or positive?*
+
+```{r}
+# Proportional
+
+balance_bing_pct <- df_bing |> 
+  count(author, sentiment) |>  # Count number of rows per author-sentiment combination
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) |>
+  mutate(
+    # Calculate the total sentiment count (positive + negative)
+    total_sentiment = positive + negative,
+    # Calculate the percentage of positive sentiment
+    positive_pct = positive / total_sentiment * 100,
+    # Calculate the percentage of negative sentiment
+    negative_pct = negative / total_sentiment * 100,
+    # Calculate the emotional balance percentage (positive - negative)
+    balance_pct = positive_pct - negative_pct
+  )
+
+# Create a bar plot to show the emotional balance by author
+ggplot(balance_bing_pct, aes(x = author, y = balance_pct, fill = balance_pct > 0)) +
+  geom_col(show.legend = FALSE) +  
+  labs(title = "Emotional balance by author (positive vs negative, %)",
+       x = "Author", y = "Balance (%)") +  
+  # Steelblue for negative and green for positive
+  scale_fill_manual(values = c("steelblue", "green")) +  
+  theme_minimal()
+
+```
+
+As we can see, studying the emotional balance we can see that **O'Brien is the "most negative"** one in terms of expressing negative emotions, such as fear, sadness, anger...
+She is followed by Stoker and Bowen.
+This is interesting, since it clearly shows that our **female authors portray in their work more negative emotions than their male counterparts.** In addition, books by female authors address themes of female protagonists such as love, abandonment, and women's expectations in society.
+The only male that is close to them in this sense is Stoker and this is due to, as previously mentioned, the fact that his novel is a horror one and fear is considered a negative emotion by bing.
+
+Now we will study the positive and negative emotions that each of the authors use the most:
+
+```{r}
+library(purrr)
+df_bing |> 
+  count(author, sentiment, word, sort = TRUE) |>  # Count occurrences of each combination of author, sentiment, and word, sorted by count
+  group_by(author, sentiment) |>  # Group by author and sentiment
+  slice_max(n = 5, order_by = n) |>  # Select top 5 words for each author-sentiment group, order by n
+  ungroup()  
+
+top_bing_words <- df_bing |> 
+  count(author, sentiment, word, sort = TRUE) |>  
+  group_by(author, sentiment) |> 
+  slice_max(n = 10, order_by = n, with_ties = FALSE) |>  # Select top 10 words for each author-sentiment group, avoiding ties
+  ungroup() 
+
+unique_authors <- unique(top_bing_words$author)  # Get a list of unique authors 
+
+walk(unique_authors, function(a) {  # Loop over each author 
+  g <- top_bing_words |> 
+    filter(author == a) |>  # Filter data for the current author
+    mutate(word = reorder_within(word, n, sentiment)) |>  # Reorder words within each sentiment based on frequency
+    ggplot(aes(x = word, y = n, fill = sentiment)) +  
+    geom_col(show.legend = FALSE) +  
+    facet_wrap(~ sentiment, scales = "free") +  # Create separate facets for each sentiment (positive and negative)
+    scale_x_reordered() +  
+    coord_flip() +  
+    labs(title = paste("Top 10 positive and negative words -", a),  
+         x = "Word", y = "Frequency") +  
+    theme_minimal()  
+  
+  print(g)  # Print the plot for the current author
+})
+
+```
+
+**Negative emotions:**
+
+-   We observe that, except for Wilde, "dark" appears as one of the most negative words in all of the authors' work.
+-   Cold is another word that most of the authors (all of them except for Wilde and Stoker) specially use in terms of negative emotions.
+-   Fear and afraid are also really common and these terms are to be found in all of the graphs, except in Joyce´s.
+
+**Positive emotions:**
+
+-   Love is the most visible and common topic in all of the works. All of the books have a high frequency of "love" mentions, even when, in general, we can see that the novels are pretty negative and dark. The words "nice" and "darling" are also pretty common, but in the case of "darling" this could be due to that fact that it is commonly used as a pet name.
+
+We can also visualize the most positive and negative words per author with wordclouds!
+
+```{r}
+words_bing <- all_books_filtered |>
+  inner_join(bing, by = "word") |>                           # Join Bing sentiment lexicon with filtered text data
+  count(author, sentiment, word, sort = TRUE)                # Count frequency of each word by author and sentiment
+
+for (a in unique(words_bing$author)) {                       # Loop through each unique author
+  for (s in unique(words_bing$sentiment)) {                  # Loop through each sentiment (positive/negative)
+    df <- words_bing |> filter(author == a, sentiment == s)  # Filter data for current author and sentiment
+
+    if (nrow(df) > 0) {                                      # Only create wordcloud if there are words to display
+      set.seed(123)                                          # for reproducibility
+      wordcloud(words = df$word,                             
+                freq = df$n,                                 # Use word frequency as size
+                max.words = 80,                              # Limit to 80 words
+                min.freq = 3,                                # Minimum frequency of 3
+                random.order = FALSE,                        # Plot more frequent words at the center
+                colors = brewer.pal(8, "Set1"),              
+                scale = c(3, 0.5))                            
+      title(main = paste("Wordcloud -", s, "(", a, ")"))     
+    }
+  }
+}
+
+```
+
+#### Bigrams (Bing)
+
+We are again interested in extracting the bigrams and trigrams from Bing to see if it gives us another perspective on Irish novels and authors:
+
+```{r}
+bigrams_sentiment_bing <- bigrams |>
+  separate(bigram, into = c("word1", "word2"), sep = " ") |>         # Split each bigram into two words
+  pivot_longer(cols = c("word1", "word2"), names_to = "pos", 
+               values_to = "word") |>                                # Reshape data so each word is in its own row
+  inner_join(bing, by = "word") |>                                   # Join with BING sentiment lexicon
+  count(author, sentiment) |>                                        # Count number of words per sentiment and author
+  left_join(total_bigrams, by = "author") |>                         # Join total number of bigrams per author
+  mutate(pct = n / total * 100)                                      # Calculate percentage of each sentiment per author
+
+# Plotting the sentiment proportions per author
+ggplot(bigrams_sentiment_bing, aes(x = author, y = pct, fill = sentiment)) +
+  geom_col(position = "dodge") +                                   
+  labs(title = "Proportion of positive and negative words by author (BING - bigrams)",
+       x = "Author", y = "% of bigrams") +                          
+  theme_minimal()                                                    
+```
+
+When we study the bigrams using BING, we see that they follow a similar or almost identical distribution to the one for single words.
+Let´s take a look at the most frequent ones per author:
+
+```{r}
+bigrams_bing <- bigrams_separated |>
+  left_join(bing, by = c("word1" = "word")) |>
+  rename(sentiment1 = sentiment) |>                     # Rename sentiment from word1
+  left_join(bing, by = c("word2" = "word")) |>
+  rename(sentiment2 = sentiment) |>                     # Rename sentiment from word2
+  mutate(
+    sentiment = coalesce(sentiment1, sentiment2),        # Use the non-NA sentiment (if available)
+    bigram = paste(word1, word2)                         # Create a 'bigram' column by combining word1 and word2
+  ) |>
+  filter(
+    word1 != "bloom",
+    word2 != "bloom",
+    word1 != "master",
+    word2 != "master",
+    word1 != "miss",                                     # Exclude bigrams whith "Bloom", "master", or "miss"
+    word2 != "miss", 
+    !is.na(sentiment)                                    # Keep only bigrams that have at least one sentiment
+  )
+
+
+top_bigrams_bing <- bigrams_bing |> 
+  count(author, sentiment, bigram, sort = TRUE) |>         # Count how often each bigram appears by author and sentiment
+  group_by(author, sentiment) |>                           # Group by author and sentiment
+  slice_max(n, n = 10, with_ties = FALSE) |>               # Select the top 10 most frequent bigrams for each group
+  ungroup()                                              
+
+# Loop through each unique author to create a plot
+for (a in unique(top_bigrams_bing$author)) {
+  plot <- top_bigrams_bing |> 
+    filter(author == a) |>                                 # Filter data for current author
+    ggplot(aes(x = fct_reorder(bigram, n), y = n, fill = sentiment)) +  # Reorder bigrams by frequency
+    geom_col(show.legend = FALSE) +                       
+    facet_wrap(~ sentiment, scales = "free") +             # Create separate facet for each sentiment with independent scales
+    coord_flip() +                                         
+    labs(title = paste("Top 10 bigrams with BING sentiment -", a), 
+         x = "Bigram", y = "Frequency") +                  
+    theme_minimal()                                      
+  print(plot)                                              
+}
+
+```
+
+In Bowen's case, we can observe that she does not have a high frequency of negatively emotional bigrams, except for the one "I´m afraid" (but with a high proportion).
+This confirms that **fear is a key emotions in Bowen´s work** and that she shows it specially through dialogue, where her characters say that they are, indeed, afraid.
+The same happens in O'Brien's case, but **O'Brien also uses many other negative bigrams, normally related to physical aspect** (pale, fat...).
+Positive bigrams are also deeply related to her characters, normally to their expressions (being smiling, being called nice, darling, fine...) and words ("I´m glad").
+
+Something that is clear is that, in *Dracula*, most of the **negative bigrams affect to the same character**: Lucy, Mina's friend who ends up being one of Dracula's victims.
+We can observe that she is referred to as "poor Lucy", or that her death is also a frequent theme in the novel.
+On the other hand, most of the **positive bigrams in the novel are to be related to God and holiness**, which pinpoints Stoker's desire to oppose God and the vampire, presenting the last one as the devil.
+
+All of the authors do mention God and religion frequently in their works, but in Stoker's case is even clearer.
+This also indicates the importance of religion for all of our Irish authors.
+**The only one that does not mention God is Wilde**.
+His work is more centered around **the body, aging and getting ugly, so his negative bigrams reflect this**, as we can see.Also, his positive bigrams are more related to the description of either things or people as "wonderful", "fantastic"...
+But he does not mention God or religion as much as the others.
+
+(We considered studying trigrams for Bing, but they were repetitive and redundant: they did not add anything new to the analysis in comparison to the bigrams, so finally they have been excluded.)
+
+### AFINN Analysis
+
+Finally, to conclude the sentiment analysis we will do an **AFINN sentiment analysis** so we can explore the emotional trajectory within the authors' text.
+Unlike Bing, AFINN asigns numerical sentiment score to words, which will allow us to have a clearer view of them and their evolution in the text.
+
+```{r}
+afinn <- get_sentiments("afinn")
+df_afinn <- all_books_filtered |> 
+  inner_join(afinn, by = "word")
+
+```
+
+```{r}
+afinn_score_author <- df_afinn |> 
+  group_by(author) |> 
+  summarise(
+    total_score = sum(value),      # Total sentiment score for each author
+    avg_score = mean(value),       # Average sentiment score per word for each author
+    word_count = n()               # Total number of words with sentiment values
+  )
+
+# Create a bar plot of total sentiment score per author
+ggplot(afinn_score_author, aes(x = author, y = total_score, fill = total_score > 0)) +
+  geom_col(show.legend = FALSE) +  
+  labs(
+    title = "AFINN - Sentiment score by author",         
+    x = "Author",                                           
+    y = "Total emotional score"                           
+  ) +
+  scale_fill_manual(values = c("red", "green")) +          # Red for negative score, green for positive
+  theme_minimal()                                         
+
+```
+
+As we can see, the results are almost identical to the ones obtained using Bing.
+But what is interesting to study is what follows: **the sentiment evolution throughout the novels**
+
+```{r}
+# Sentiment evolution per text (separate plot per author)
+
+df_afinn_indexed <- df_afinn |> 
+  group_by(author) |> 
+  mutate(index = row_number()) |>            # Assign a running index to each word per author
+  ungroup()
+
+df_afinn_indexed |> 
+  group_by(author, index_group = index %/% 100) |>       # Group into chunks of 100 words
+  summarise(mean_sentiment = mean(value), .groups = "drop") |>  # Calculate average sentiment per chunk
+  ggplot(aes(x = index_group, y = mean_sentiment, color = author)) +
+  geom_line(size = 0.5) +
+  facet_wrap(~ author, scales = "free_x") +              # Create one plot per author
+  labs(title = "Sentiment evolution - AFINN",
+       x = "Section of the text", y = "Average sentiment") +
+  theme_minimal()
+
+```
+
+Here, we can see the **sentiment evolution** of the texts.
+
+What we are seeing is the average sentiment score across same-length chunks of text:
+
+-   **Bowen**: her work is predominantly negative.
+    There is a slight upward shift in the middle of her work.
+    We have to take into account that she is deeply focused in the effect (negative effects, above all) of different social situations, like war.
+    Her novel takes place in London, just in the middle of the two World Wars.
+
+-   **Joyce**: we observe that his work is variable in terms of sentiments, way more than the other authors´.
+    We see constant and fast changes between positive and negative sentiments.
+    *Ulysses* is writen with a mixture of real-world descriptions, internal monologue, conflicts, doubts, but also personal hope; this can be seen in this graph.
+
+-   **O'Brien**: her fluctuation is higher than Bowen's, but not as constant as Joyce's.
+    In her work, she specially reflects on the place of women in the world and in sex, and also on religion (Catholic).
+    We can see that her work turns the most negative almost by the end of the text.
+
+-   **Stoker**: we see a wide range of change, with both positive and negative peaks.
+    These peaks may be related to the various moments of threat, panic, but also heroicism that are to be found in *Dracula*.
+
+-   **Wilde**: his novel starts pretty positive, but the general trend is negative.
+    It recovers by the end, but only partially.
+    His novel, as previously mentioned, is focused on moral decay, aging, the importance of appearance.
+    We can clearly see in the graph the moral descent of Gray when his narcissism gets worse and worse.
+
+Let´s take a look at the most intense words, according to AFINN punctuation:
+
+```{r}
+top_afinn_intense <- df_afinn |> 
+  group_by(author) |> 
+  arrange(author, value) |> 
+  slice_head(n = 10) |>  # Select the 10 words with the most negative sentiment per author
+  bind_rows(
+    df_afinn |> 
+      group_by(author) |> 
+      arrange(author, desc(value)) |> 
+      slice_head(n = 10)  # Add the 10 words with the most positive sentiment per author
+  ) |> 
+  ungroup()  
+
+# Create a bar plot with the most emotionally charged words per author
+top_afinn_intense |> 
+  mutate(word = reorder_within(word, value, author)) |>  # Reorder words within each author for plotting
+  ggplot(aes(x = word, y = value, fill = value > 0)) +  # Positive values get one color, negatives another
+  geom_col(show.legend = FALSE) +  
+  facet_wrap(~ author, scales = "free") +  # One plot per author
+  scale_x_reordered() +  
+  coord_flip() +  
+  labs(
+    title = "Top words with the most emotional load by author (AFINN)",  
+    x = "Word", 
+    y = "AFINN value"
+  ) +
+  scale_fill_manual(values = c("darkblue", "lightgreen")) +  # Colors for negative and positive values, green for positive and blue for negative
+  theme_minimal() 
+
+```
+
+Something that has come to our attention is that **female authors are the ones that use the most word like "bitch" or "bitches"**.
+This could be due to the fact that they deal with gender in their work, about femininity and what being a "good woman" meant and still means.
+And probably these words serve as a point of criticism, or a easy way to show how "bad women" are referred to in general culture.
+
+On the other hand, we also see this and other **misogynistic terms like "cunt" and racist ones like "nigger" in Joyce**.
+Although it's not the norm for Irish authors, we can conclude that since these are novels from several centuries ago, we can encounter these misogynistic and racist references.
+
+## 7. ABSA (conditional sentiment analysis)
+
+Finally, we will perform and Aspect-Based Sentiment Analysis, or ABSA, that will be **focused on the terms of "woman" and "Ireland".** We expect this analysis to give us deeper insight and understanding on how gender and national identity are represented and emotionally shown in the selected authors' work.
+
+Each of our writers engages with both aspects in their novels, often in contrasting ways.
+For example, Bowen focuses on the psychological situation of women, while Stoker views women through the gothic-aesthetic lens and focuses on the anxiety and horror surrounding females.
+This analysis, we expect, will help us discover underlying ideological perspectives in the books, new emotional thones and concerns.
+
+Since these are very specific elements, we'll use the *fuzzyjoin* package, which allows us to explore contextual relationships or the proximity of specific words within a given range (as we're doing in this case, taking words at a distance of 5 words).
+We also considered using *quanteda* and its advantages for understanding a keyword in context; however, *fuzzyjoin* was more straightforward and gave us much more interpretable and informative results.
+
+#### Woman
+
+```{r}
+library(fuzzyjoin)  
+
+keyword1 <- "woman"  
+
+# Use a difference join to get words that appear near the keyword "woman"
+context_woman <- difference_inner_join(
+  all_books,  # Full dataset
+  all_books |> filter(word == keyword1),  # Filter rows where the word is "woman"
+  by = "position",  # Join based on word position
+  max_dist = 5,  # Look within 5 words before and after
+  distance_col = "dist"  # Name the column that stores distance
+) |>
+  filter(position.x != position.y) |>  # Exclude exact matches 
+  select(author.x, word.x, dist) |>  # Select only necessary columns
+  rename(author = author.x, word = word.x)  
+
+# Count and visualize the 20 most frequent context words around "woman"
+context_woman |> 
+  count(word, sort = TRUE) |>  # Count occurrences of each word
+  slice_max(n, n = 20) |>  # Keep the top 20 most frequent
+  ggplot(aes(x = reorder(word, n), y = n)) +  # Reorder words by frequency for plotting
+  geom_col(fill = "darkred") +  
+  coord_flip() + 
+  labs(title = "Words around 'Woman'", 
+       x = "Word", y = "Frequency") +
+  theme_minimal()  
+
+```
+
+Here we can see the most frequent words that appear in the immediate context of the term "woman" across all of the books.
+
+-   **Time is the most frequent word that appears near "woman".** This may indicate that the authors tend to focus on temporality when relating to their female characters.
+    This could mean that women in their novels are surrounded by references about aging, or memory, anxiety about the pass of time.
+
+-   Some words, like "eyes", "hand", "looked"...
+    Indicate that there is a clear emphasis on both visual and physical descriptions around women in the novels.
+    The action of looking, or others that are also really frequent like sitting, involve observation and passivity.
+
+-   We can see several names of characters, both female and a male (Dorian).
+    In case of the women this is pretty normal, but in Dorian's case it may serve as an indicator of his "don Juan" portrayal in the novel.
+
+Let's see now the most frequent words by author:
+
+```{r}
+# By author
+
+# Count the top 10 most frequent words near "woman" for each author
+top_context_by_author <- context_woman |>
+  count(author, word, sort = TRUE) |>  # Count how often each word appears per author
+  group_by(author) |>  # Group by author
+  slice_max(n, n = 10) |>  # Take the top 10 words per author
+  ungroup()  
+
+# Create a faceted bar plot showing word frequencies around "woman" by author
+ggplot(top_context_by_author, aes(x = reorder_within(word, n, author), y = n)) +
+  geom_col(fill = "darkred") +  
+  coord_flip() +  
+  facet_wrap(~ author, scales = "free_y") +  # Create a separate plot for each author
+  scale_x_reordered() +  
+  labs(title = "Words around 'woman' by author",  
+       x = "Word", y = "Frequency") +
+  theme_minimal()  
+
+
+```
+
+-   **Bowen**: as we can see in the graph, Bowen tends to mention her characters a lot around the word "woman".
+    This may indicate that she focuses on the relationships between her characters, and her characters and womanhood, when talking about women and their situation.
+    This makens sense, since her main character is a girl.
+
+-   **Joyce**: in his case, womanhood is linked to the character of Molly Bloom.
+    He mentions several other words, such as "time"; but it is interesting his using of the words "poor", "wait" or "wife".
+    They indicate that Joyce seems to link womanhood not only to his characters, but also to passivity or marriage.
+
+-   **O'Brien**: we see that there are several words that indicate that she links womanhood to the homeplace: "baba", "tea", "bed"...
+    She seems to focus on the most conservative and family-focused view of womanhood.
+
+-   **Stoker**: as expected, in Stoker's case womanhood is treated in relation to both his male and female characters; but also to feelings and emotions like fear, desire.
+    And, of course, death.
+    The fact that "Lucy" is the most mentioned female character in this context may indicate that he prioritizes the vision of women as victims, instead of heroes (as could have been if he had mentioned Mina instead of the poor Lucy).
+
+-   **Wilde**: we can see that he links women to his male characters, like different lords, Harry or Dorian.
+    Other words, like "cried" indicate that he also focuses on the decay proper of his novel when talking about womanhood.
+
+#### Ireland
+
+Let's now take a look at the words that surround the word "Ireland":
+
+```{r}
+keyword2 <- "ireland"
+
+# Create a context window around the keyword "ireland" 
+context_ireland <- difference_inner_join(
+  all_books, 
+  all_books |> filter(word == keyword2),  # Filter for rows where the word is "ireland"
+  by = "position", 
+  max_dist = 5,  # Capture words within 5 positions before and after "ireland"
+  distance_col = "dist"
+) |>
+  filter(position.x != position.y) |>  # Exclude the keyword from the results
+  select(author.x, word.x, dist) |>  # Keep only the relevant columns
+  rename(author = author.x, word = word.x)  
+
+# Count the most frequent words appearing near "ireland" and plot the top 10
+context_ireland |> 
+  count(word, sort = TRUE) |>  # Count word frequency
+  slice_max(n, n = 10) |>  # Select the top 10 most frequent words
+  ggplot(aes(x = reorder(word, n), y = n)) +  # Reorder bars by frequency
+  geom_col(fill = "darkgreen") +  
+  coord_flip() +  
+  labs(title = "Words around 'Ireland'", 
+       x = "Word", y = "Frequency") +
+  theme_minimal()  
+
+```
+
+The fact that the word "Ireland" appears as a context-word indicates that it normally is repeated, maybe in prayer, poetry, songs...
+Like: "Oh, Ireland, Ireland...".
+But other words, such as time, country, heard...
+This kind of words may indicate that the authors tend to refer to Ireland in dialogues, reflecting on it; and this may be also indicated by the continuous mention of characters or the word "citizen".
+We can also see the word "love".
+This has a clear and important value: yes, they reflect a lot about their country, they seem worried, but they hold love for it.
+
+Let's see now the differences between authors:
+
+```{r}
+# Count the top 10 most frequent words near "ireland" for each author
+top_context_by_author_ireland <- context_ireland |>
+  count(author, word, sort = TRUE) |> # Count how often each word appears per author
+  group_by(author) |> # Group by author
+  slice_max(n, n = 10) |> # Take the top 10 words per author
+  ungroup()
+
+# Create a faceted bar plot showing word frequencies around "ireland" by author
+ggplot(top_context_by_author_ireland, aes(x = reorder_within(word, n, author), y = n)) +
+  geom_col(fill = "darkgreen") +
+  coord_flip() +
+  facet_wrap(~ author, scales = "free_y") + # Create a separate plot for each author
+  scale_x_reordered() +
+  labs(title = "Words around 'ireland' by author",
+       x = "Word", y = "Frequency") +
+  theme_minimal()
+
+```
+
+-   **Bowen**: her vocabulary is really variate.
+    We must take into account that she is British, not only Irish.
+    Her novel takes place in London, but it still mentions Ireland and the vocabulary that she uses seems to show a tension related to the country.
+    We can see that she mentions several characters around the word "Ireland", which indicates that she explains that tension through her characters and their relationships.
+
+-   **Joyce**: we can see words like "bloody" or "don´t".
+    This may indicate that Joyce is critical about his country, above all by using his characters and their dialogue.
+
+-   **O'Brien**: she seems to talk a lot about emotions, time, thinking...
+    She moved from Ireland to London, but she shows that she still misses it, even when she also criticizes it.
+
+-   **Stoker**: the context around Ireland in *Dracula* is less emotional.
+    The novel takes place outside from Ireland, but the fact that he still mentions it may show some identity emotions in the author.
+
+-   **Wilde**: we see words like "soul", "sins".
+    Again, Wilde prefers an ethic and aesthetic point of view and perspective.
+    He may be also showing some criticism about his country, since he was punished by it and its most conservatives perspectives.
+
+# CONCLUSIONS AND DISCUSSION
+
+In this analysis, we studied **five famous and representative Irish authors of the 19th and 20th centuries—Oscar Wilde, James Joyce, Bram Stoker, Elizabeth Bowen, and Edna O'Brien**—with the aim of comparing their linguistic styles, topics, and language use, and finding patterns and differences among them.
+Our main motivation was to see whether, **due to their historical, cultural, and geographical context, these authors shared themes, sentiments or certain linguistic patterns, or whether, on the contrary, they differed in other aspects.**
+
+First, we can conclude that all the authors share a common topic: an **interest or concern with the passage of time and with sensory perception**, thus reflecting an **introspective perspective of the Irish authors of these centuries**.
+In both the Topic Modeling and Term Frequency analyses, we were able to see how, on the one hand, the words "time, night, life, and day" evoke the passage of time (with "time" being the word they all shared), and on the other hand, "eyes" and "hand" are physical elements that can point to the sensorial: sight, touch, and the perception of the world.
+
+We also noted how low the vocabulary sparsity is (66%), which confirms that **the authors share a relatively similar vocabulary**.
+This is not surprising, given that they come from the same context.
+However, analyzing lexical diversity (taking into account the length of the book), we saw that, although the percentage is generally similar among all of them, **Joyce is the one who uses the most diverse vocabulary**, while O'Brien uses much less.
+
+Regarding the sentiment analysis, we see that **the negative emotions predominate in all of the authors**.
+They focus specially on trust, anticipation, sadness...
+Joy is also present, but way less.
+We can conclude that **Stoker** focuses specially on **fear**, while **Joyce** focuses on **anticipation, trust and joy**.
+**Wilde reflects both sadness and joy**, which reflects how he writes his novel: **oposing good to bad, sad to happy**.
+A really ethic-oriented writing in general.
+**Bowen and O´Brien focus more on subtle and pysochological aspects of their narrative, specially around womanhood**.
+O´Brien is the most negative one.
+
+We can also see that, in general, all of the authors share a worry about time and God.
+On the one hand, they seem to be really **worried about time passing by in different contexts, let it be for aging (Wilde) or related to gender**.
+On the other hand, we see that they **lonk the idea of God to love and joy, yes; but specially to fear**.This shows the **strongly Catholic tradition in Ireland** and how our authors deal with it.
+God represents punishment, yes; but also comfort in some cases.
+
+When studying the **sentiments around the words "woman" and "Ireland"**, we see some variations.
+Regarding "woman," it's obvious that male writers don't treat it like their female counterparts, which shows that **among Irish female authors of these centuries, they were already influenced by a vision of gender and the role of women** (a more critical perspective of everyday life, emotions), and especially **with the figure of the "mother"** as an important one, highly charged with emotions.
+On the other hand, for men, we could summarize that Wilde is not as interested in this figure, Stoker focuses on the woman as the victim, and finally Joyce is arguably the male author who treats "woman" the most, although sometimes in a passive way and with a misogynistic perspective (cunt, bitch), as we expected from the 19 and 20th centuries
+
+In general, all of them seem to show both **love and criticism towards Ireland (except Stoker, who barely mentions it)**.Identity, conflict, memory, time and love for their country is something they share.
+
+In general, with this work we have been able to answer all the questions we asked ourselves and better understand Irish literary culture.
+
+## All the techniques and elements used (seen in class)
+
+-   Tokenization
+-   Tidyverse and DTM
+-   Bigrams and trigrams
+-   Term frequency
+-   Correlations
+-   TF-IDF
+-   Sparsity
+-   Topic modelling
+-   Sentiment analysis: NRC, Bing and AFINN
+-   ABSA
